@@ -1,0 +1,399 @@
+import cv2
+import mediapipe as mp
+import numpy as np
+import math
+
+# ============================================================
+# CAMERA
+# ============================================================
+
+cap = cv2.VideoCapture(0)
+
+if not cap.isOpened():
+    print("Could not open camera.")
+    exit()
+
+# ============================================================
+# MEDIAPIPE
+# ============================================================
+
+mp_hands = mp.solutions.hands
+mp_draw = mp.solutions.drawing_utils
+
+hands = mp_hands.Hands(
+    max_num_hands=2,
+    min_detection_confidence=0.7,
+    min_tracking_confidence=0.7
+)
+
+# ============================================================
+# PASTEL COLOURS
+# OpenCV uses BGR
+# ============================================================
+
+DARK_PURPLE = (55, 20, 65)
+DEEP_PURPLE = (80, 35, 95)
+
+PASTEL_PINK = (180, 125, 245)
+PASTEL_ORANGE = (120, 175, 250)
+PASTEL_YELLOW = (150, 220, 255)
+
+# ============================================================
+# CREATE THE PASTEL ART VERSION
+# ============================================================
+
+def make_pastel_art(image):
+
+    # Convert image to HSV
+    hsv = cv2.cvtColor(image, cv2.COLOR_BGR2HSV)
+
+    h = hsv[:, :, 0]
+    s = hsv[:, :, 1]
+    v = hsv[:, :, 2]
+
+    # --------------------------------------------------------
+    # Start with dark purple everywhere
+    # --------------------------------------------------------
+
+    result = np.zeros_like(image)
+
+    result[:, :] = DARK_PURPLE
+
+    # --------------------------------------------------------
+    # Create brightness levels
+    # --------------------------------------------------------
+
+    # Very dark areas
+    dark = v < 55
+
+    # Shadows
+    shadow = (v >= 55) & (v < 105)
+
+    # Middle tones
+    middle = (v >= 105) & (v < 175)
+
+    # Bright areas
+    bright = v >= 175
+
+    # --------------------------------------------------------
+    # DARK PURPLE SHADOWS
+    # --------------------------------------------------------
+
+    result[dark] = (55, 20, 65)
+
+    # --------------------------------------------------------
+    # PURPLE / PINK SHADOWS
+    # --------------------------------------------------------
+
+    result[shadow] = (105, 55, 125)
+
+    # --------------------------------------------------------
+    # PINK
+    # --------------------------------------------------------
+
+    result[middle] = PASTEL_PINK
+
+    # --------------------------------------------------------
+    # ORANGE
+    # --------------------------------------------------------
+
+    # Some mid/high brightness pixels become orange
+    orange_mask = (
+        (v >= 125) &
+        (v < 210) &
+        (s > 35)
+    )
+
+    result[orange_mask] = PASTEL_ORANGE
+
+    # --------------------------------------------------------
+    # YELLOW HIGHLIGHTS
+    # --------------------------------------------------------
+
+    yellow_mask = (
+        (v >= 175) &
+        (s < 180)
+    )
+
+    result[yellow_mask] = PASTEL_YELLOW
+
+    # --------------------------------------------------------
+    # VERY BRIGHT AREAS
+    # --------------------------------------------------------
+
+    very_bright = v > 220
+
+    result[very_bright] = (165, 225, 255)
+
+    # ========================================================
+    # PRESERVE SOME ORIGINAL STRUCTURE
+    # ========================================================
+
+    # Convert grayscale brightness into a soft detail layer
+    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+
+    # Slight blur removes noisy camera pixels
+    gray = cv2.GaussianBlur(gray, (5, 5), 0)
+
+    # Edges allow hair, eyes, clothes etc. to remain recognizable
+    edges = cv2.Canny(
+        gray,
+        40,
+        100
+    )
+
+    # Dilate edges slightly
+    kernel = np.ones((2, 2), np.uint8)
+
+    edges = cv2.dilate(
+        edges,
+        kernel,
+        iterations=1
+    )
+
+    # Put dark purple into strong edges
+    result[edges > 0] = DEEP_PURPLE
+
+    # ========================================================
+    # SMOOTH THE COLOURS
+    # ========================================================
+
+    result = cv2.GaussianBlur(
+        result,
+        (3, 3),
+        0
+    )
+
+    return result
+
+
+# ============================================================
+# GET FOUR HAND POINTS
+# ============================================================
+
+def get_hand_points(results, width, height):
+
+    if not results.multi_hand_landmarks:
+        return None
+
+    if len(results.multi_hand_landmarks) < 2:
+        return None
+
+    hand1 = results.multi_hand_landmarks[0]
+    hand2 = results.multi_hand_landmarks[1]
+
+    # --------------------------------------------------------
+    # HAND 1
+    # --------------------------------------------------------
+
+    h1_thumb = (
+        int(hand1.landmark[4].x * width),
+        int(hand1.landmark[4].y * height)
+    )
+
+    h1_index = (
+        int(hand1.landmark[8].x * width),
+        int(hand1.landmark[8].y * height)
+    )
+
+    # --------------------------------------------------------
+    # HAND 2
+    # --------------------------------------------------------
+
+    h2_thumb = (
+        int(hand2.landmark[4].x * width),
+        int(hand2.landmark[4].y * height)
+    )
+
+    h2_index = (
+        int(hand2.landmark[8].x * width),
+        int(hand2.landmark[8].y * height)
+    )
+
+    return [
+        h1_index,
+        h2_index,
+        h2_thumb,
+        h1_thumb
+    ]
+
+
+# ============================================================
+# MAIN LOOP
+# ============================================================
+
+while True:
+
+    success, frame = cap.read()
+
+    if not success:
+        print("Could not read camera.")
+        break
+
+    # Mirror camera
+    frame = cv2.flip(frame, 1)
+
+    height, width, _ = frame.shape
+
+    # ========================================================
+    # MEDIAPIPE
+    # ========================================================
+
+    rgb = cv2.cvtColor(
+        frame,
+        cv2.COLOR_BGR2RGB
+    )
+
+    results = hands.process(rgb)
+
+    # ========================================================
+    # GET PARALLELOGRAM
+    # ========================================================
+
+    points = get_hand_points(
+        results,
+        width,
+        height
+    )
+
+    # ========================================================
+    # TWO HANDS DETECTED
+    # ========================================================
+
+    if points is not None:
+
+        # Convert points to OpenCV contour
+        polygon = np.array(
+            points,
+            dtype=np.int32
+        )
+
+        polygon = polygon.reshape(
+            (-1, 1, 2)
+        )
+
+        # ====================================================
+        # CREATE PASTEL VERSION OF ENTIRE CAMERA
+        # ====================================================
+
+        pastel_frame = make_pastel_art(frame)
+
+        # ====================================================
+        # CREATE MASK
+        # ====================================================
+
+        mask = np.zeros(
+            (height, width),
+            dtype=np.uint8
+        )
+
+        cv2.fillPoly(
+            mask,
+            [polygon],
+            255
+        )
+
+        # ====================================================
+        # PUT PASTEL IMAGE INSIDE PARALLELOGRAM
+        #
+        # IMPORTANT:
+        # NO TRANSPARENCY IS USED HERE.
+        #
+        # The actual camera image is replaced inside the
+        # parallelogram by the pastel version.
+        # ====================================================
+
+        frame[mask == 255] = pastel_frame[mask == 255]
+
+        # ====================================================
+        # DARK PURPLE OVERALL TONE
+        # ONLY VERY DARK PIXELS REMAIN DARK PURPLE
+        # ====================================================
+
+        # ====================================================
+        # PARALLELOGRAM BORDER
+        # ====================================================
+
+        cv2.polylines(
+            frame,
+            [polygon],
+            True,
+            (95, 45, 110),
+            3
+        )
+
+        # ====================================================
+        # SUBTLE INNER BORDER
+        # ====================================================
+
+        cv2.polylines(
+            frame,
+            [polygon],
+            True,
+            (180, 90, 170),
+            1
+        )
+
+        # ====================================================
+        # CORNER POINTS
+        # ====================================================
+
+        for x, y in points:
+
+            cv2.circle(
+                frame,
+                (x, y),
+                7,
+                (210, 120, 210),
+                2
+            )
+
+            cv2.circle(
+                frame,
+                (x, y),
+                2,
+                (255, 200, 240),
+                -1
+            )
+
+    else:
+
+        # ====================================================
+        # WAITING FOR BOTH HANDS
+        # ====================================================
+
+        cv2.putText(
+            frame,
+            "SHOW BOTH HANDS",
+            (30, 45),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.65,
+            (180, 120, 220),
+            2
+        )
+
+    # ========================================================
+    # DISPLAY
+    # ========================================================
+
+    cv2.imshow(
+        "Pastel Reality Window",
+        frame
+    )
+
+    # ========================================================
+    # Q TO EXIT
+    # ========================================================
+
+    key = cv2.waitKey(1) & 0xFF
+
+    if key == ord("q"):
+        break
+
+
+# ============================================================
+# CLEANUP
+# ============================================================
+
+cap.release()
+cv2.destroyAllWindows()
